@@ -3,6 +3,7 @@ package action_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/jackc/manifest/action"
@@ -202,5 +203,54 @@ func TestInvokeJSONRejectsInvalidInputBeforeDispatch(t *testing.T) {
 	result, err := dispatcher.InvokeJSON(context.Background(), struct{}{}, "json", []byte("{\"value\":\"ok\"} \n\t"))
 	if err != nil || result != "ok" || handlerCalls != 1 || middlewareCalls != 1 {
 		t.Fatalf("trailing whitespace should be accepted: result=%v error=%v calls=%d/%d", result, err, handlerCalls, middlewareCalls)
+	}
+}
+
+func TestCallPreservesSuccessfulResults(t *testing.T) {
+	t.Run("nil any", func(t *testing.T) { testSuccessfulResult[any](t, nil) })
+	t.Run("nil nonempty interface", func(t *testing.T) { testSuccessfulResult[error](t, nil) })
+	t.Run("typed nil pointer", func(t *testing.T) { testSuccessfulResult[*string](t, nil) })
+	t.Run("concrete result", func(t *testing.T) { testSuccessfulResult(t, "result") })
+}
+
+func testSuccessfulResult[R any](t *testing.T, result R) {
+	t.Helper()
+	var registry action.Registry[struct{}, struct{}]
+	op := registry.Define(action.Definition[struct{}, struct{}, struct{}, R]{
+		Name: "result",
+		Handler: func(context.Context, struct{}, struct{}) (R, error) {
+			return result, nil
+		},
+	})
+	dispatcher := action.NewDispatcher(&registry)
+	got, err := op.Call(context.Background(), dispatcher, struct{}{}, struct{}{})
+	if err != nil || !reflect.DeepEqual(got, result) {
+		t.Fatalf("Call() = %#v, %v; want %#v, nil", got, err, result)
+	}
+	dynamic, err := dispatcher.InvokeJSON(context.Background(), struct{}{}, "result", []byte(`{}`))
+	if err != nil || !reflect.DeepEqual(dynamic, got) {
+		t.Fatalf("InvokeJSON() = %#v, %v; want %#v, nil", dynamic, err, got)
+	}
+}
+
+func TestCallRejectsInvalidMiddlewareResults(t *testing.T) {
+	for name, result := range map[string]any{"nil": nil, "wrong type": 42} {
+		t.Run(name, func(t *testing.T) {
+			var registry action.Registry[struct{}, struct{}]
+			op := registry.Define(action.Definition[struct{}, struct{}, struct{}, string]{
+				Name: "result",
+				Handler: func(context.Context, struct{}, struct{}) (string, error) {
+					return "valid", nil
+				},
+			})
+			dispatcher := action.NewDispatcher(&registry, func(next action.Handler[struct{}]) action.Handler[struct{}] {
+				return func(ctx context.Context, inv action.Invocation[struct{}]) (any, error) {
+					return result, nil
+				}
+			})
+			if got, err := op.Call(context.Background(), dispatcher, struct{}{}, struct{}{}); err == nil || got != "" {
+				t.Fatalf("Call() = %q, %v; want zero result and type error", got, err)
+			}
+		})
 	}
 }

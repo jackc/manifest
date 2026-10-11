@@ -119,6 +119,11 @@ func (a *Action[D, M, P, R]) Call(ctx context.Context, d *Dispatcher[D, M], depe
 	if err != nil {
 		return zero, err
 	}
+	// A nil interface has no dynamic type for the assertion below. Only an
+	// interface result type has a zero value that remains nil when boxed in any.
+	if v == nil && any(zero) == nil {
+		return zero, nil
+	}
 	r, ok := v.(R)
 	if !ok {
 		return zero, fmt.Errorf("action: action %q returned %T", a.Name(), v)
