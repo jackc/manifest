@@ -45,6 +45,15 @@ mount boundaries, invalid stages, and late registration are rejected. A named
 `Condition` controls both installation and the inventory's `enabled` field.
 Disabled declarations remain in the inventory, with their prospective stages.
 
+Requests that match no enabled endpoint get the router's plain 404, or 405
+with an `Allow` header, unless `SetUnmatched(Unmatched{Name, Handle})` names
+an application handler, once and before `Handler()`. It receives the methods
+enabled at the request's path: none for an unknown path, otherwise the method
+is unsupported. Methods the router does not know, such as `PROPFIND`, are
+refused before routing, even under a mount, so they reach this handler too.
+Requests for disabled endpoints are unmatched. Global stages wrap the handler;
+endpoint stages do not. The inventory names it and its stages.
+
 Chi is currently a private routing implementation. Only literal segments and
 whole-segment `{name}` placeholders are accepted. Methods are explicit: GET does
 not implicitly register HEAD or OPTIONS. Paths retain existing Chi matching and
@@ -128,6 +137,7 @@ errors belong in custom handlers.
 `Inventory()` returns a versioned snapshot sorted by path and method. Each entry
 contains full metadata, activation, effective ordered stages, target kind,
 executable binding details where available, and explicit inspection gaps.
+When an unmatched handler is set, `unmatched` gives its name and stages.
 
 The registry establishes installed dispatch and wrapper construction. A binding
 establishes parameter mapping and its direct operation handle. Wrapper names,
@@ -145,7 +155,7 @@ function inspection is needed.
 
 The tests cover metadata enforcement before decoding, text-decoded values,
 embedded fields, derived inputs, custom encoders, ordering, routing and
-mount boundaries, independent instances, frozen registration, strict versus
-legacy decoding, conflicting mappings, size limits, typed invocation, and
-snapshot isolation. An architecture check rejects dependencies on application
+mount boundaries, unmatched requests, independent instances, frozen
+registration, strict versus legacy decoding, conflicting mappings, size
+limits, typed invocation, and snapshot isolation. An architecture check rejects dependencies on application
 code and other Manifest packages.

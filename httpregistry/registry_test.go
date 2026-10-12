@@ -1,6 +1,7 @@
 package httpregistry_test
 
 import (
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -167,4 +168,93 @@ func TestCustomFactoriesOnlyConstructEnabledEndpoints(t *testing.T) {
 		invalid := httpregistry.New(compiler)
 		invalid.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/"}, httpregistry.CustomFactory(func() http.Handler { return nil }))
 	})
+}
+
+func TestUnmatchedRequests(t *testing.T) {
+	type reply struct {
+		path    string
+		allowed []string
+	}
+	var replies []reply
+	header := httpregistry.Stage{Name: "global-header", Wrap: func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Global", "yes")
+			next.ServeHTTP(w, r)
+		})
+	}}
+	r := httpregistry.New(compiler, header)
+	ok := httpregistry.Custom(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") }))
+	r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/items/{id}", Metadata: metadata{Public: true}}, ok)
+	r.Handle(httpregistry.Spec[metadata]{Method: "DELETE", Path: "/items/{id}", Metadata: metadata{Public: true}}, ok)
+	r.Handle(httpregistry.Spec[metadata]{Method: "POST", Path: "/items/{id}", When: &httpregistry.Condition{Name: "off"}}, ok)
+	r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/off", When: &httpregistry.Condition{Name: "off"}}, ok)
+	r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/private"}, ok)
+	r.Mount(httpregistry.Spec[metadata]{Path: "/protocol", Metadata: metadata{Public: true}}, ok)
+	require.Nil(t, r.Inventory().Unmatched)
+	r.SetUnmatched(httpregistry.Unmatched{Name: "test-unmatched", Handle: func(w http.ResponseWriter, req *http.Request, allowed []string) {
+		replies = append(replies, reply{req.URL.Path, allowed})
+		w.WriteHeader(418)
+	}})
+	h := r.Handler()
+
+	for _, tc := range []struct {
+		method, path string
+		allowed      []string
+	}{
+		{"GET", "/missing", []string{}},
+		{"GET", "/items/1/", []string{}},
+		{"GET", "/off", []string{}},                         // disabled endpoints are not installed
+		{"POST", "/items/1", []string{"GET", "DELETE"}},     // the disabled POST is not allowed
+		{"HEAD", "/items/1", []string{"GET", "DELETE"}},     // GET does not imply HEAD
+		{"PROPFIND", "/items/1", []string{"GET", "DELETE"}}, // unknown to the router
+		{"PROPFIND", "/missing", []string{}},
+		{"GET", "/items/a%2Fb/x", []string{}},
+		{"POST", "/items/a%2Fb", []string{"GET", "DELETE"}}, // routed on the escaped path, as the router does
+		// The router refuses methods it does not know before routing, even
+		// under a mount, which itself accepts every method.
+		{"PROPFIND", "/protocol/any", []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE"}},
+	} {
+		replies = nil
+		w := request(h, tc.method, tc.path, "")
+		require.Equal(t, 418, w.Code, "%s %s", tc.method, tc.path)
+		require.Equal(t, "yes", w.Header().Get("X-Global"), "global stages wrap unmatched requests")
+		require.Len(t, replies, 1)
+		require.Equal(t, tc.allowed, replies[0].allowed, "%s %s", tc.method, tc.path)
+	}
+	// Matched requests, including endpoint policy refusals and mounts, never
+	// reach the unmatched handler.
+	replies = nil
+	require.Equal(t, "ok", request(h, "GET", "/items/1", "").Body.String())
+	require.Equal(t, "ok", request(h, "GET", "/items/a%2Fb", "").Body.String())
+	require.Equal(t, 401, request(h, "GET", "/private", "").Code)
+	require.Equal(t, "ok", request(h, "DELETE", "/protocol/any", "").Body.String())
+	require.Empty(t, replies)
+
+	inv := r.Inventory()
+	require.Equal(t, &httpregistry.UnmatchedEntry{Name: "test-unmatched", Stages: []string{"global-header"}}, inv.Unmatched)
+	inv.Unmatched.Stages[0] = "changed"
+	require.Equal(t, "global-header", r.Inventory().Unmatched.Stages[0])
+	require.Panics(t, func() { r.SetUnmatched(httpregistry.Unmatched{Name: "late", Handle: func(http.ResponseWriter, *http.Request, []string) {}}) })
+}
+
+func TestUnmatchedDeclarations(t *testing.T) {
+	handle := func(http.ResponseWriter, *http.Request, []string) {}
+	require.Panics(t, func() { httpregistry.New(compiler).SetUnmatched(httpregistry.Unmatched{Handle: handle}) })
+	require.Panics(t, func() { httpregistry.New(compiler).SetUnmatched(httpregistry.Unmatched{Name: "x"}) })
+	require.Panics(t, func() {
+		r := httpregistry.New(compiler)
+		r.SetUnmatched(httpregistry.Unmatched{Name: "x", Handle: handle})
+		r.SetUnmatched(httpregistry.Unmatched{Name: "y", Handle: handle})
+	})
+	// Without a handler, the router's replies and the inventory's JSON are as before.
+	r := httpregistry.New(compiler)
+	r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/a", Metadata: metadata{Public: true}}, httpregistry.Custom(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})))
+	h := r.Handler()
+	require.Equal(t, 404, request(h, "GET", "/missing", "").Code)
+	w := request(h, "POST", "/a", "")
+	require.Equal(t, 405, w.Code)
+	require.Equal(t, "GET", w.Header().Get("Allow"))
+	data, err := json.Marshal(r.Inventory())
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "unmatched")
 }

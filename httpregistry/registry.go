@@ -49,8 +49,27 @@ type Entry[M any] struct {
 }
 
 type Inventory[M any] struct {
-	SchemaVersion int        `json:"schema_version"`
-	Endpoints     []Entry[M] `json:"endpoints"`
+	SchemaVersion int             `json:"schema_version"`
+	Unmatched     *UnmatchedEntry `json:"unmatched,omitzero"` // nil: the router's plain 404 and 405
+	Endpoints     []Entry[M]      `json:"endpoints"`
+}
+
+// UnmatchedEntry describes the named handler for requests that match no
+// enabled endpoint and the global stages that wrap it.
+type UnmatchedEntry struct {
+	Name   string   `json:"name"`
+	Stages []string `json:"stages"`
+}
+
+// Unmatched answers requests that match no enabled endpoint. Allowed lists
+// the methods enabled at the request's path in a fixed order (GET, HEAD,
+// POST, PUT, PATCH, DELETE, CONNECT, OPTIONS, TRACE): empty means no
+// endpoint has that path, otherwise the method is unsupported or unknown.
+// The application chooses the status and body. Disabled endpoints are not
+// installed, so requests for them are unmatched too.
+type Unmatched struct {
+	Name   string
+	Handle func(w http.ResponseWriter, r *http.Request, allowed []string)
 }
 
 // Endpoint is constructed by Custom, CustomFactory, or Bind. Its executable and
@@ -93,12 +112,13 @@ func CustomFactory(factory func() http.Handler) Endpoint {
 }
 
 type Registry[M any] struct {
-	compiler Compiler[M]
-	global   []Stage
-	mux      *chi.Mux
-	entries  []Entry[M]
-	keys     map[string]bool
-	handler  http.Handler
+	compiler  Compiler[M]
+	global    []Stage
+	mux       *chi.Mux
+	entries   []Entry[M]
+	keys      map[string]bool
+	unmatched Unmatched
+	handler   http.Handler
 }
 
 // New requires an explicit metadata compiler, even when metadata is descriptive
@@ -169,13 +189,7 @@ func (r *Registry[M]) register(spec Spec[M], ep Endpoint, mount bool) {
 	}
 	validateStages(stages)
 	enabled := spec.When == nil || spec.When.Enabled
-	names := make([]string, 0, len(r.global)+len(stages))
-	for _, s := range r.global {
-		names = append(names, s.Name)
-	}
-	for _, s := range stages {
-		names = append(names, s.Name)
-	}
+	names := append(stageNames(r.global), stageNames(stages)...)
 	if enabled {
 		if ep.factory != nil {
 			ep.handler = ep.factory()
@@ -199,12 +213,57 @@ func (r *Registry[M]) register(spec Spec[M], ep Endpoint, mount bool) {
 	})
 }
 
+// SetUnmatched replaces the router's plain 404 and 405 replies with an
+// application handler, inside the global stages. It may be set once,
+// before Handler is called.
+func (r *Registry[M]) SetUnmatched(u Unmatched) {
+	if r.handler != nil {
+		panic("httpregistry: registration is frozen")
+	}
+	if u.Name == "" || u.Handle == nil {
+		panic("httpregistry: unmatched handler name and function are required")
+	}
+	if r.unmatched.Handle != nil {
+		panic("httpregistry: unmatched handler is already set")
+	}
+	r.unmatched = u
+}
+
 // Handler freezes registration. Repeated calls return the same handler.
 func (r *Registry[M]) Handler() http.Handler {
 	if r.handler == nil {
+		if handle := r.unmatched.Handle; handle != nil {
+			mux := r.mux
+			reply := func(w http.ResponseWriter, req *http.Request) { handle(w, req, allowedMethods(mux, req)) }
+			// The router sends unknown methods to its 405 handler even when
+			// no endpoint has the path; allowed then tells the cases apart.
+			mux.NotFound(reply)
+			mux.MethodNotAllowed(reply)
+		}
 		r.handler = wrap(r.mux, r.global)
 	}
 	return r.handler
+}
+
+var methods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE"}
+
+// allowedMethods asks the router which methods it would route for the
+// request's path, routing on the same escaped or unescaped form it does.
+func allowedMethods(mux *chi.Mux, r *http.Request) []string {
+	path := r.URL.RawPath
+	if path == "" {
+		path = r.URL.Path
+	}
+	if path == "" {
+		path = "/"
+	}
+	allowed := []string{}
+	for _, m := range methods {
+		if mux.Find(chi.NewRouteContext(), m, path) != "" {
+			allowed = append(allowed, m)
+		}
+	}
+	return allowed
 }
 
 // Inventory returns sorted copies of library-owned descriptions. Metadata is
@@ -233,7 +292,11 @@ func (r *Registry[M]) Inventory() Inventory[M] {
 		}
 		return strings.Compare(a.Method, b.Method)
 	})
-	return Inventory[M]{SchemaVersion: 1, Endpoints: entries}
+	inventory := Inventory[M]{SchemaVersion: 1, Endpoints: entries}
+	if r.unmatched.Handle != nil {
+		inventory.Unmatched = &UnmatchedEntry{Name: r.unmatched.Name, Stages: stageNames(r.global)}
+	}
+	return inventory
 }
 
 // PathParam reads an endpoint's matched path parameter without exposing the router.
@@ -247,6 +310,13 @@ func wrap(h http.Handler, stages []Stage) http.Handler {
 		}
 	}
 	return h
+}
+func stageNames(stages []Stage) []string {
+	names := make([]string, 0, len(stages))
+	for _, s := range stages {
+		names = append(names, s.Name)
+	}
+	return names
 }
 func validateStages(stages []Stage) {
 	for _, s := range stages {
@@ -268,13 +338,7 @@ func within(path, prefix string) bool {
 	}
 	return true
 }
-func validMethod(s string) bool {
-	switch s {
-	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE":
-		return true
-	}
-	return false
-}
+func validMethod(s string) bool { return slices.Contains(methods, s) }
 func sameStrings(a, b []string) bool {
 	a = slices.Clone(a)
 	b = slices.Clone(b)
