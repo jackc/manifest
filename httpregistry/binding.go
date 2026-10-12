@@ -38,6 +38,14 @@ type ErrorWriter struct {
 	Write func(http.ResponseWriter, *http.Request, error)
 }
 
+// Encoder serializes a successful result as JSON. The registry finishes
+// encoding before committing the status and headers, so a failure reaches
+// the error writer instead. Its name describes it in the inventory.
+type Encoder struct {
+	Name   string
+	Encode func(any) ([]byte, error)
+}
+
 type Binding struct {
 	Namespace            string // qualifies the action name when joining inventories
 	Inputs               []Input
@@ -47,6 +55,7 @@ type Binding struct {
 	RejectUnknownQuery   bool
 	RejectUnexpectedBody bool // for bindings without JSON input
 	Status               int
+	Encoder              Encoder // zero value: encoding/json/v2
 	Errors               ErrorWriter
 }
 
@@ -62,6 +71,7 @@ type BindingDescription struct {
 	RejectUnexpectedBody bool       `json:"reject_unexpected_body"`
 	Status               int        `json:"success_status"`
 	Response             string     `json:"response"`
+	Encoder              string     `json:"encoder,omitempty"` // empty: encoding/json/v2
 	Errors               string     `json:"error_policy"`
 }
 
@@ -108,7 +118,7 @@ func operationHandler[D, P, R any](operation Operation[D, P, R], dependencies D,
 			plan.spec.Errors.Write(w, r, err)
 			return
 		}
-		data, err := json.Marshal(result)
+		data, err := plan.encode(result)
 		if err != nil {
 			plan.spec.Errors.Write(w, r, err)
 			return
@@ -117,4 +127,11 @@ func operationHandler[D, P, R any](operation Operation[D, P, R], dependencies D,
 		w.WriteHeader(plan.spec.Status)
 		_, _ = w.Write(append(data, '\n'))
 	})
+}
+
+func (plan *bindingPlan) encode(result any) ([]byte, error) {
+	if plan.spec.Encoder.Encode != nil {
+		return plan.spec.Encoder.Encode(result)
+	}
+	return json.Marshal(result)
 }

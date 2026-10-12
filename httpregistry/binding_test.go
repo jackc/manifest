@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -225,4 +226,137 @@ func TestBindingRejectsCustomParameterUnmarshalling(t *testing.T) {
 			httpregistry.Bind(operation[customJSONFromParams, bool]{}, "", spec)
 		})
 	})
+}
+
+// hexID is an array type that decodes itself from text, like uuid.UUID.
+type hexID [2]byte
+
+func (h *hexID) UnmarshalText(text []byte) error {
+	if len(text) != 4 {
+		return errors.New("want four hex digits")
+	}
+	v, err := strconv.ParseUint(string(text), 16, 16)
+	if err != nil {
+		return err
+	}
+	h[0], h[1] = byte(v>>8), byte(v)
+	return nil
+}
+
+// shouted is a string kind whose own decoding wins over conversion by kind.
+type shouted string
+
+func (s *shouted) UnmarshalText(text []byte) error {
+	*s = shouted(strings.ToUpper(string(text)))
+	return nil
+}
+
+func TestBindingDecodesTextValues(t *testing.T) {
+	type params struct {
+		ID     hexID
+		Others []hexID
+		Maybe  *hexID
+		Name   shouted
+	}
+	var got params
+	op := operation[params, bool]{call: func(_ context.Context, _ string, p params) (bool, error) { got = p; return true, nil }}
+	ep := httpregistry.Bind(op, "", httpregistry.Binding{JSON: httpregistry.NoJSON, Status: 200, Errors: errorWriter(), Inputs: []httpregistry.Input{
+		{Source: "path", Name: "id", Field: "ID"}, {Source: "query", Name: "other", Field: "Others"},
+		{Source: "query", Name: "maybe", Field: "Maybe"}, {Source: "query", Name: "name", Field: "Name"},
+	}})
+	h := registryFor(ep, "/items/{id}").Handler()
+	require.Equal(t, 200, request(h, "POST", "/items/0a0b?other=0102&other=ffff&maybe=1234&name=quiet", "").Code)
+	require.Equal(t, params{ID: hexID{0x0a, 0x0b}, Others: []hexID{{1, 2}, {0xff, 0xff}}, Maybe: &hexID{0x12, 0x34}, Name: "QUIET"}, got)
+	got = params{}
+	require.Equal(t, 200, request(h, "POST", "/items/0a0b", "").Code)
+	require.Nil(t, got.Maybe)
+	for _, target := range []string{"/items/0a0", "/items/0a0b?other=xyzw", "/items/0a0b?maybe=1&maybe=2"} {
+		require.Equal(t, 400, request(h, "POST", target, "").Code, target)
+	}
+}
+
+type promoted struct {
+	Note  string
+	Count int
+}
+
+type pointerEmbedding struct{ *promoted }
+
+type customEmbedded struct{ customJSONParams }
+
+type ambiguousCustomEmbedded struct {
+	customJSONParams
+	otherCustomJSON
+}
+
+type otherCustomJSON struct{}
+
+func (*otherCustomJSON) UnmarshalJSON([]byte) error { return nil }
+
+func TestBindingPromotesEmbeddedFields(t *testing.T) {
+	type params struct {
+		ID string
+		promoted
+	}
+	var got params
+	op := operation[params, bool]{call: func(_ context.Context, _ string, p params) (bool, error) { got = p; return true, nil }}
+	inputs := []httpregistry.Input{{Source: "path", Name: "id", Field: "ID"}, {Source: "body", Name: "note", Field: "Note"}, {Source: "query", Name: "count", Field: "Count"}}
+	ep := httpregistry.Bind(op, "", httpregistry.Binding{JSON: httpregistry.StrictJSON, Status: 200, Errors: errorWriter(), Inputs: inputs})
+	r := registryFor(ep, "/items/{id}")
+	require.Equal(t, 200, request(r.Handler(), "POST", "/items/a?count=3", `{"note":"hi"}`).Code)
+	require.Equal(t, params{ID: "a", promoted: promoted{Note: "hi", Count: 3}}, got)
+	require.Equal(t, "Note", r.Inventory().Endpoints[0].Binding.Inputs[1].Field)
+
+	require.PanicsWithValue(t, "httpregistry: unmapped parameter field Count", func() {
+		httpregistry.Bind(op, "", httpregistry.Binding{JSON: httpregistry.StrictJSON, Status: 200, Errors: errorWriter(), Inputs: inputs[:2]})
+	})
+	spec := httpregistry.Binding{JSON: httpregistry.StrictJSON, Status: 200, Errors: errorWriter()}
+	require.PanicsWithValue(t, "httpregistry: unsupported embedded field promoted", func() {
+		httpregistry.Bind(operation[pointerEmbedding, bool]{}, "", spec)
+	})
+	// A promoted UnmarshalJSON makes the parameters themselves custom.
+	require.PanicsWithValue(t, "httpregistry: custom parameter unmarshalling is unsupported", func() {
+		httpregistry.Bind(operation[customEmbedded, bool]{}, "", spec)
+	})
+	// Two such methods cancel out by ambiguity; the embedded field is still refused.
+	require.PanicsWithValue(t, "httpregistry: unsupported embedded field customJSONParams", func() {
+		httpregistry.Bind(operation[ambiguousCustomEmbedded, bool]{}, "", spec)
+	})
+}
+
+func TestBindingEncoder(t *testing.T) {
+	type params struct{}
+	result := map[string]any{"b": 1, "a": nil}
+	op := operation[params, map[string]any]{call: func(context.Context, string, params) (map[string]any, error) { return result, nil }}
+	encoder := httpregistry.Encoder{Name: "test-encoder", Encode: func(v any) ([]byte, error) {
+		if v.(map[string]any)["fail"] != nil {
+			return nil, errors.New("cannot encode")
+		}
+		return []byte(`"encoded"`), nil
+	}}
+	r := registryFor(httpregistry.Bind(op, "", httpregistry.Binding{JSON: httpregistry.NoJSON, Status: 201, Errors: errorWriter(), Encoder: encoder}), "/")
+	w := request(r.Handler(), "POST", "/", "")
+	require.Equal(t, 201, w.Code)
+	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	require.Equal(t, "\"encoded\"\n", w.Body.String())
+	require.Equal(t, "test-encoder", r.Inventory().Endpoints[0].Binding.Encoder)
+
+	// Encoding finishes before the status is committed.
+	result["fail"] = true
+	require.Equal(t, 422, request(r.Handler(), "POST", "/", "").Code)
+
+	// The default is JSON v2, and the inventory leaves the encoder unnamed.
+	delete(result, "fail")
+	r = registryFor(httpregistry.Bind(op, "", httpregistry.Binding{JSON: httpregistry.NoJSON, Status: 200, Errors: errorWriter()}), "/")
+	require.JSONEq(t, `{"a":null,"b":1}`, request(r.Handler(), "POST", "/", "").Body.String())
+	require.Empty(t, r.Inventory().Endpoints[0].Binding.Encoder)
+	data, err := json.Marshal(r.Inventory().Endpoints[0].Binding)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "encoder")
+
+	for _, half := range []httpregistry.Encoder{{Name: "named-only"}, {Encode: encoder.Encode}} {
+		require.Panics(t, func() {
+			httpregistry.Bind(op, "", httpregistry.Binding{JSON: httpregistry.NoJSON, Status: 200, Errors: errorWriter(), Encoder: half})
+		})
+	}
 }

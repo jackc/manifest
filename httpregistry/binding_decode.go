@@ -2,6 +2,7 @@ package httpregistry
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json/v2"
 	"fmt"
 	"io"
@@ -39,7 +40,7 @@ func (plan *bindingPlan) decodeURLParameters(r *http.Request, params reflect.Val
 	// Preserve declaration order, including which malformed input fails first.
 	for _, mapping := range plan.inputs {
 		input := mapping.input
-		destination := params.Field(mapping.parameterField)
+		destination := params.FieldByIndex(mapping.parameterField)
 		switch input.Source {
 		case "path":
 			if err := setValues(destination, []string{PathParam(r, input.Name)}); err != nil {
@@ -95,7 +96,7 @@ func (plan *bindingPlan) decodeBody(w http.ResponseWriter, r *http.Request, para
 		return err
 	}
 	for bodyField, parameterField := range plan.bodyDestinations {
-		params.Field(parameterField).Set(body.Elem().Field(bodyField))
+		params.FieldByIndex(parameterField).Set(body.Elem().Field(bodyField))
 	}
 	return nil
 }
@@ -106,7 +107,7 @@ func setValues(destination reflect.Value, values []string) error {
 		destination.Set(reflect.New(destination.Type().Elem()))
 		return setValues(destination.Elem(), values)
 	}
-	if destination.Kind() == reflect.Slice {
+	if !decodesText(destination.Type()) && destination.Kind() == reflect.Slice {
 		destination.Set(reflect.MakeSlice(destination.Type(), len(values), len(values)))
 		for i, text := range values {
 			if err := setScalar(destination.Index(i), text); err != nil {
@@ -122,6 +123,9 @@ func setValues(destination reflect.Value, values []string) error {
 }
 
 func setScalar(destination reflect.Value, text string) error {
+	if decodesText(destination.Type()) {
+		return destination.Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText([]byte(text))
+	}
 	switch destination.Kind() {
 	case reflect.String:
 		destination.SetString(text)

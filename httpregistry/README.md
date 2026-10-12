@@ -66,19 +66,35 @@ invocation.
 
 A binding declares:
 
-- Each path, query, or JSON-body source and its exported top-level parameter field.
+- Each path, query, or JSON-body source and its exported parameter field:
+  top-level, or promoted from an embedded struct.
 - Fields intentionally left at zero via `Zero`; every field must be accounted for.
 - JSON decoding policy, optional byte limit, and unused-query/body behavior.
-- Success status and an application-supplied named error writer.
+- Success status, an optional named result encoder, and an
+  application-supplied named error writer.
 
-Path/query mappings support strings, booleans, integers, and floats, optional
-pointers, and query lists. Repeated scalar query values fail even when equal.
-Missing optional query values leave the field at zero; `Required` distinguishes
-missing values from present empty strings. Conversion uses Go's `strconv`
-functions. Path values come from the router and are not decoded a second time.
-Defaults and arbitrary field conversion functions are not supported yet.
+`FieldInputs[P](source)` derives inputs for every field of `P` from one
+source, named as `encoding/json` names them (the tag's name, else the Go
+field name), and returns `-`-tagged fields as `Zero`. It suits operations
+that take one flat parameter document, such as an action catalog served one
+route per action. The derived inputs are ordinary declarations: `Bind`
+validates them and the inventory lists them.
 
-Parameter structs cannot have custom JSON unmarshalling or embedded fields.
+Path/query mappings support strings, booleans, integers, and floats, types
+implementing `encoding.TextUnmarshaler` (such as `uuid.UUID` and `time.Time`),
+optional pointers, and query lists. A type's own `UnmarshalText` takes
+precedence over conversion by kind. Repeated scalar query values fail even when
+equal. Missing optional query values leave the field at zero; `Required`
+distinguishes missing values from present empty strings. Other conversion uses
+Go's `strconv` functions. Path values come from the router and are not decoded a
+second time. Defaults and arbitrary field conversion functions are not supported
+yet.
+
+Parameter structs cannot have custom JSON unmarshalling. Struct values may be
+embedded; their promoted fields are mapped like top-level ones and must be
+accounted for. Embedded pointers, non-struct embeddings, and embedded types with
+custom JSON unmarshalling are rejected. Fields Go cannot promote (ambiguous or
+shadowed) are left at zero, as JSON ignores them too.
 Body names use ASCII letters, digits, underscores, dots, and hyphens (except
 `-` alone). Body fields retain their own JSON types and codecs; arbitrary custom field
 codecs are not analyzed. Multiple assignments to one parameter field, duplicate
@@ -100,8 +116,9 @@ bodies are ignored by default.
 
 Decode failures arrive at the error writer as `InputError`, preserving wrapped
 errors such as `http.MaxBytesError`. Operation errors pass through unchanged.
-Successful results are encoded completely with `encoding/json/v2` and the
-configured 2xx status;
+Successful results are encoded completely with `encoding/json/v2`, or the
+binding's named `Encoder` when one is set (for example, to keep an existing
+API's `encoding/json` response shapes), and the configured 2xx status;
 204/205 and projections are not supported. Encoding happens before committing
 headers. Login cookies, response filtering, OAuth forms, streams, and protocol
 errors belong in custom handlers.
@@ -126,7 +143,8 @@ Application-specific source inventories remain separate; a binding's
 namespace/action pair can be joined to them by tooling. No runtime action
 function inspection is needed.
 
-The tests cover metadata enforcement before decoding, ordering, routing and
+The tests cover metadata enforcement before decoding, text-decoded values,
+embedded fields, derived inputs, custom encoders, ordering, routing and
 mount boundaries, independent instances, frozen registration, strict versus
 legacy decoding, conflicting mappings, size limits, typed invocation, and
 snapshot isolation. An architecture check rejects dependencies on application

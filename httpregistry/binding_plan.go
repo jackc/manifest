@@ -1,6 +1,7 @@
 package httpregistry
 
 import (
+	"encoding"
 	"encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -19,14 +20,14 @@ type bindingPlan struct {
 	pathNames        []string
 	queryNames       map[string]bool
 	bodyType         reflect.Type
-	bodyDestinations []int // body field index -> parameter field index
+	bodyDestinations [][]int // body field index -> parameter field index path
 }
 
 // inputMapping keeps a declared input beside its resolved destination instead
 // of relying on two parallel slices remaining in sync.
 type inputMapping struct {
 	input          Input
-	parameterField int
+	parameterField []int // index path; longer than one for promoted fields
 }
 
 func compileBinding(parameterType reflect.Type, spec Binding) *bindingPlan {
@@ -43,16 +44,17 @@ func compileBinding(parameterType reflect.Type, spec Binding) *bindingPlan {
 	var bodyFields []reflect.StructField
 
 	// Resolving a field also claims it, so no second source can overwrite it.
-	resolveField := func(name string) int {
+	// Fields promoted from embedded structs are named as Go promotes them.
+	resolveField := func(name string) []int {
 		field, ok := parameterType.FieldByName(name)
-		if !ok || len(field.Index) != 1 || !field.IsExported() || field.Anonymous {
+		if !ok || !field.IsExported() || field.Anonymous {
 			panic("httpregistry: unsupported parameter field " + name)
 		}
 		if assignedFields[name] {
 			panic("httpregistry: multiple sources for " + name)
 		}
 		assignedFields[name] = true
-		return field.Index[0]
+		return field.Index
 	}
 	for _, input := range spec.Inputs {
 		if input.Name == "" || strings.ContainsAny(input.Name, "\"\\,\n\r\t") {
@@ -64,7 +66,7 @@ func compileBinding(parameterType reflect.Type, spec Binding) *bindingPlan {
 			panic("httpregistry: duplicate input " + sourceKey)
 		}
 		declaredSources[sourceKey] = true
-		fieldType := parameterType.Field(parameterField).Type
+		fieldType := parameterType.FieldByIndex(parameterField).Type
 		switch input.Source {
 		case "path", "query":
 			if input.Source == "path" {
@@ -97,10 +99,9 @@ func compileBinding(parameterType reflect.Type, spec Binding) *bindingPlan {
 	for _, name := range spec.Zero {
 		resolveField(name)
 	}
-	for index := 0; index < parameterType.NumField(); index++ {
-		name := parameterType.Field(index).Name
-		if !assignedFields[name] {
-			panic("httpregistry: unmapped parameter field " + name)
+	for _, field := range parameterFields(parameterType) {
+		if !assignedFields[field.Name] {
+			panic("httpregistry: unmapped parameter field " + field.Name)
 		}
 	}
 	plan.bodyType = reflect.StructOf(bodyFields)
@@ -113,6 +114,9 @@ func validateBindingOptions(spec Binding) {
 	}
 	if spec.Errors.Name == "" || spec.Errors.Write == nil {
 		panic("httpregistry: error writer is required")
+	}
+	if (spec.Encoder.Name == "") != (spec.Encoder.Encode == nil) {
+		panic("httpregistry: encoder name and function are required together")
 	}
 	if spec.MaxBodyBytes < 0 {
 		panic("httpregistry: negative body limit")
@@ -133,20 +137,55 @@ func validateParameterType(parameterType reflect.Type) {
 		panic("httpregistry: parameters must be a struct")
 	}
 	// Custom parameter unmarshalling would bypass the declared field mapping.
-	parameterPointer := reflect.PointerTo(parameterType)
-	if parameterPointer.Implements(reflect.TypeFor[json.Unmarshaler]()) ||
-		parameterPointer.Implements(reflect.TypeFor[json.UnmarshalerFrom]()) {
+	if customJSON(parameterType) {
 		panic("httpregistry: custom parameter unmarshalling is unsupported")
 	}
+	parameterFields(parameterType)
 }
+
+func customJSON(t reflect.Type) bool {
+	pointer := reflect.PointerTo(t)
+	return pointer.Implements(reflect.TypeFor[json.Unmarshaler]()) ||
+		pointer.Implements(reflect.TypeFor[json.UnmarshalerFrom]())
+}
+
+// parameterFields lists the fields a binding must account for: top-level
+// fields and those promoted from embedded structs, but not the embedded
+// structs themselves. Only struct values may be embedded: a pointer would
+// need allocating, and custom unmarshalling would bypass the mapping.
+// Fields Go cannot promote (ambiguous or shadowed) are not listed; JSON
+// ignores them too, so they stay at their zero values.
+func parameterFields(parameterType reflect.Type) []reflect.StructField {
+	var fields []reflect.StructField
+	for _, field := range reflect.VisibleFields(parameterType) {
+		if !field.Anonymous {
+			fields = append(fields, field)
+			continue
+		}
+		if field.Type.Kind() != reflect.Struct || customJSON(field.Type) {
+			panic("httpregistry: unsupported embedded field " + field.Name)
+		}
+	}
+	return fields
+}
+
+var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+
+// decodesText reports whether a type parses itself from a path or query
+// value, as uuid.UUID and time.Time do. Such types take precedence over
+// conversion by kind.
+func decodesText(t reflect.Type) bool { return reflect.PointerTo(t).Implements(textUnmarshalerType) }
 
 func validateURLField(input Input, fieldType reflect.Type) {
 	scalarType := fieldType
 	if scalarType.Kind() == reflect.Pointer {
 		scalarType = scalarType.Elem()
 	}
-	if scalarType.Kind() == reflect.Slice && input.Source == "query" {
+	if !decodesText(scalarType) && scalarType.Kind() == reflect.Slice && input.Source == "query" {
 		scalarType = scalarType.Elem()
+	}
+	if decodesText(scalarType) {
+		return
 	}
 	switch scalarType.Kind() {
 	case reflect.String, reflect.Bool,
@@ -186,6 +225,7 @@ func (plan *bindingPlan) describe(actionName, actionDescription string) BindingD
 		RejectUnexpectedBody: plan.spec.RejectUnexpectedBody,
 		Status:               plan.spec.Status,
 		Response:             "json: complete operation result",
+		Encoder:              plan.spec.Encoder.Name,
 		Errors:               plan.spec.Errors.Name,
 	}
 }
