@@ -12,10 +12,13 @@ Applications own their dependencies, metadata, and policy semantics.
 - `github.com/jackc/manifest/httpregistry`: HTTP routing, metadata compilation,
   typed operation bindings, and inventories derived from the same declarations
   that serve requests. See the [HTTP registry contract](httpregistry/README.md).
+- `github.com/jackc/manifest/mcpregistry`: explicit MCP tool registration, typed
+  and raw operation bindings, context policies, and an inventory of those same
+  declarations. See the [MCP registry contract](mcpregistry/README.md).
 
-The packages are independent. HTTP bindings accept a structural operation
-interface, so applications can adapt their action pipeline without coupling the
-HTTP registry to a particular catalog or application host.
+The packages are independent. HTTP and MCP bindings accept structural operation
+interfaces, so applications can adapt their action pipeline without coupling
+either registry to a particular catalog or application host.
 
 Inspectable declarations establish wiring and parameter mappings. Behavioral
 tests provide evidence that application handlers and policies implement their
