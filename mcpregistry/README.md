@@ -77,7 +77,8 @@ client-safe error, stopping the call. For every endpoint kind, a stage's
 Context identity is resolved per call, never retained in registry state. Typed
 stages run after SDK argument validation and decoding, before the application
 handler. Raw stages run before the raw handler and its argument cap. These are not substitutes for authentication of HTTP discovery and
-other protocol methods: protect the transport separately.
+other protocol methods: protect the transport separately, as `mcphttp` does for
+Streamable HTTP.
 
 Bindings require a named `ErrorPolicy` to map operation failures to safe client
 errors. Raw result-formatting failures also pass through that policy. SDK input
@@ -93,7 +94,9 @@ panics, so one would stop the whole server.
 `Spec.Tool` preserves SDK tool fields, including explicit schemas, descriptions,
 annotations, and extension `_meta`. The library does not derive annotations from
 action mutation flags, install retries, fetch files, or interpret idempotency
-keys. These have application-defined semantics.
+keys. These have application-defined semantics. `ReadOnlyAnnotations()` returns
+new annotations for a tool the application declares read-only: read-only, not
+destructive, idempotent, and closed-world. They are hints, not evidence.
 
 ## Inventory contract
 

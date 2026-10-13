@@ -18,6 +18,10 @@ Applications own their dependencies, metadata, and policy semantics.
 - `github.com/jackc/manifest/mcpregistry`: explicit MCP tool registration, typed
   and raw operation bindings, context policies, and an inventory of those same
   declarations. See the [MCP registry contract](mcpregistry/README.md).
+- `github.com/jackc/manifest/mcphttp`: bearer-token middleware for an MCP
+  Streamable HTTP endpoint (Origin check, RFC 6750 challenges, per-user POST
+  limits) around an application's token verifier, and the SDK handler options
+  it makes safe. See the [MCP over HTTP contract](mcphttp/README.md).
 
 The packages are independent. HTTP and MCP bindings accept structural operation
 interfaces, so applications can adapt their action pipeline without coupling
