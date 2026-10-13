@@ -74,10 +74,11 @@ preserve or explicitly revise this contract.
 
 `Bind(operation, dependencies, Binding{...})` accepts a structural operation
 interface with `Name`, `Description`, and `Call(context.Context, D, P) (R, error)`.
-The operation must invoke its normal action pipeline. An application-owned
-wrapper can satisfy that interface while supplying its dispatcher. The library
-neither bypasses that wrapper nor serializes parameters through dynamic JSON
-invocation.
+The operation must invoke its normal action pipeline. Actions defined in an
+`action.Catalog` satisfy that interface directly, finding their dispatcher
+through `D`; an application-owned wrapper can also satisfy it while supplying
+its dispatcher. The library neither bypasses the operation nor serializes
+parameters through dynamic JSON invocation.
 
 A binding declares:
 

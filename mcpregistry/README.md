@@ -46,13 +46,15 @@ type Operation[D, P, R any] interface {
 ```
 
 This accepts application action wrappers without depending on `manifest/action`.
-Applications using `action.Action` directly can adapt their dispatcher into `D`
-or provide a small wrapper, as they do for HTTP bindings. Invocation must retain
-the application's validation, authorization, and audit pipeline.
+Actions defined in an `action.Catalog` satisfy it directly, finding their
+dispatcher through `D`; applications using `action.Action` directly can provide
+a small wrapper, as they do for HTTP bindings. Invocation must retain the
+application's validation, authorization, and audit pipeline.
 
 Raw operations similarly provide `Name`, `Description`, and
-`InvokeJSON(context.Context, D, []byte) (any, error)`. An application adapter can
-delegate that method to its own dispatcher using the action handle's name.
+`InvokeJSON(context.Context, D, []byte) (any, error)`. Catalog actions satisfy
+this too, decoding strictly as `Dispatcher.InvokeJSON` does; an
+application adapter can instead delegate to its own dispatcher by action name.
 The registry never round-trips the arguments through `map[string]any`, inserts
 defaults, or validates them against the advertised schema. This preserves number
 tokens and extension fields and allows an import to return individual row errors.

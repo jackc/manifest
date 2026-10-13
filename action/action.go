@@ -213,8 +213,16 @@ func (d *Dispatcher[D, M]) InvokeJSON(ctx context.Context, dependencies D, name 
 		return nil, ErrUnknownAction
 	}
 	p := a.NewParams()
-	if err := json.Unmarshal(data, p, json.RejectUnknownMembers(true)); err != nil {
-		return nil, &ValidationError{Action: name, Err: err}
+	if err := decodeParams(name, data, p); err != nil {
+		return nil, err
 	}
 	return a.Invoke(ctx, d, dependencies, p)
+}
+
+// decodeParams is the strict JSON v2 decoding InvokeJSON documents.
+func decodeParams(action string, data []byte, p any) error {
+	if err := json.Unmarshal(data, p, json.RejectUnknownMembers(true)); err != nil {
+		return &ValidationError{Action: action, Err: err}
+	}
+	return nil
 }
