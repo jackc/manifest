@@ -44,6 +44,12 @@ func TestIndependentRegistriesAndDispatchers(t *testing.T) {
 		if len(catalog) != 1 || catalog[0] != tc.action {
 			t.Fatalf("Catalog() = %v", catalog)
 		}
+		if _, ok := found.NewParams().(*params); !ok {
+			t.Fatalf("NewParams() = %T", found.NewParams())
+		}
+		if _, ok := found.NewResult().(*string); !ok {
+			t.Fatalf("NewResult() = %T", found.NewResult())
+		}
 	}
 
 	// A single dispatcher can serve different dependencies on successive calls.

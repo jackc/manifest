@@ -49,7 +49,11 @@ type (
 // D is the application dependency type and M is its metadata type.
 type AnyAction[D, M any] interface {
 	Info[M]
+	// NewParams returns a pointer to a zero parameter value, ready for decoding.
 	NewParams() any
+	// NewResult returns a pointer to a zero result value. It describes the
+	// result type, for example to generate a schema; it is never invoked.
+	NewResult() any
 	Invoke(context.Context, *Dispatcher[D, M], D, any) (any, error)
 }
 
@@ -110,6 +114,7 @@ func (a *Action[D, M, P, R]) Name() string        { return a.def.Name }
 func (a *Action[D, M, P, R]) Description() string { return a.def.Description }
 func (a *Action[D, M, P, R]) Metadata() M         { return a.def.Metadata }
 func (a *Action[D, M, P, R]) NewParams() any      { return new(P) }
+func (a *Action[D, M, P, R]) NewResult() any      { return new(R) }
 
 // Call invokes the action with this call's dependencies and parameters. The
 // dispatcher must use the registry in which the action was defined.
