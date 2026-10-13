@@ -7,8 +7,6 @@ import (
 	"testing"
 
 	"github.com/jackc/manifest/action"
-	"github.com/jackc/manifest/httpregistry"
-	"github.com/jackc/manifest/mcpregistry"
 )
 
 // app is a dependency value that carries its own dispatcher, as an
@@ -45,13 +43,9 @@ func defineEcho(catalog *action.Catalog[*app, metadata], calls *int) *action.Cat
 	})
 }
 
-// Catalog actions are bound directly, with no application wrapper.
-var (
-	_ httpregistry.Operation[*app, checkedParams, string] = (*action.CatalogAction[*app, metadata, checkedParams, string])(nil)
-	_ mcpregistry.Operation[*app, checkedParams, string]  = (*action.CatalogAction[*app, metadata, checkedParams, string])(nil)
-	_ mcpregistry.RawOperation[*app]                      = (*action.CatalogAction[*app, metadata, checkedParams, string])(nil)
-	_ action.AnyAction[*app, metadata]                    = (*action.CatalogAction[*app, metadata, checkedParams, string])(nil)
-)
+// The HTTP and MCP registries' tests check that catalog actions bind
+// directly; this package's tests do not import them.
+var _ action.AnyAction[*app, metadata] = (*action.CatalogAction[*app, metadata, checkedParams, string])(nil)
 
 func TestCatalogCallsUseTheDependenciesDispatcher(t *testing.T) {
 	ctx := context.Background()
