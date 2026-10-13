@@ -61,12 +61,14 @@ be empty; literal and single-segment routes take precedence over it. Its value
 is read, and bound, like any other placeholder. Methods are explicit: GET does
 not implicitly register HEAD or OPTIONS. Paths retain existing Chi matching and
 escaping behavior, without automatic trailing-slash redirects. `PathParam`
-reads matched values without exposing Chi. Mounts accept a literal path without
-a trailing slash, delegate that path, its slash form, and descendants, and do
-not strip `URL.Path`. Root mounts and overlapping endpoint/mount boundaries,
-including a `{name...}` endpoint above a mount, are not supported in this first
-version. Router replacement should preserve or
-explicitly revise this contract.
+reads matched values without exposing Chi. `MatchedPath` names the declared
+path of the endpoint or mount that served a request, so a global stage can log
+by route once the next handler returns; it is empty for unmatched requests.
+Mounts accept a literal path without a trailing slash, delegate that path, its
+slash form, and descendants, and do not strip `URL.Path`. Root mounts and
+overlapping endpoint/mount boundaries, including a `{name...}` endpoint above a
+mount, are not supported in this first version. Router replacement should
+preserve or explicitly revise this contract.
 
 ## Typed bindings
 
@@ -158,8 +160,8 @@ namespace/action pair can be joined to them by tooling. No runtime action
 function inspection is needed.
 
 The tests cover metadata enforcement before decoding, text-decoded values,
-embedded fields, derived inputs, custom encoders, ordering, routing,
-trailing placeholders, and mount boundaries, unmatched requests, independent instances, frozen
-registration, strict versus legacy decoding, conflicting mappings, size
+embedded fields, derived inputs, custom encoders, ordering, routing and
+mount boundaries, trailing placeholders, matched paths, unmatched requests,
+independent instances, frozen registration, strict versus legacy decoding, conflicting mappings, size
 limits, typed invocation, and snapshot isolation. An architecture check rejects dependencies on application
 code and other Manifest packages.

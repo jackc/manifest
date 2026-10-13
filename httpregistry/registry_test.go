@@ -312,3 +312,28 @@ func TestTrailingPlaceholder(t *testing.T) {
 	inv := r.Inventory()
 	require.Equal(t, "/files/{id}/{name...}", inv.Endpoints[1].Path)
 }
+
+func TestMatchedPath(t *testing.T) {
+	var matched []string
+	logger := httpregistry.Stage{Name: "log", Wrap: func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			require.Empty(t, httpregistry.MatchedPath(req)) // Not yet routed.
+			next.ServeHTTP(w, req)
+			matched = append(matched, httpregistry.MatchedPath(req))
+		})
+	}}
+	r := httpregistry.New(compiler, logger)
+	ok := httpregistry.Custom(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/items/{id}", Metadata: metadata{Public: true}}, ok)
+	r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/private"}, ok)
+	r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/files/{name...}", Metadata: metadata{Public: true}}, ok)
+	r.Mount(httpregistry.Spec[metadata]{Path: "/protocol", Metadata: metadata{Public: true}}, ok)
+	h := r.Handler()
+	for _, path := range []string{"/items/1", "/private", "/files/a/b", "/protocol/x", "/missing"} {
+		request(h, "GET", path, "")
+	}
+	request(h, "POST", "/items/1", "")
+	// A stage's refusal still names the route; unmatched requests name none.
+	require.Equal(t, []string{"/items/{id}", "/private", "/files/{name...}", "/protocol", "", ""}, matched)
+	require.Empty(t, httpregistry.MatchedPath(httptest.NewRequest("GET", "/items/1", nil)))
+}

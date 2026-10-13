@@ -4,6 +4,7 @@
 package httpregistry
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -198,13 +199,18 @@ func (r *Registry[M]) register(spec Spec[M], ep Endpoint, mount bool) {
 			}
 		}
 		h := wrap(ep.handler, stages)
-		if mount {
-			r.mux.Mount(spec.Path, h)
-		} else if rest != "" {
+		if rest != "" {
 			// The router names a trailing wildcard "*". Alias it before any
 			// stage runs, so PathParam reads every placeholder by its name.
-			r.mux.Method(spec.Method, strings.TrimSuffix(spec.Path, "{"+rest+"...}")+"*", restAlias(rest, h))
-		} else {
+			h = restAlias(rest, h)
+		}
+		h = recordMatch(spec.Path, h)
+		switch {
+		case mount:
+			r.mux.Mount(spec.Path, h)
+		case rest != "":
+			r.mux.Method(spec.Method, strings.TrimSuffix(spec.Path, "{"+rest+"...}")+"*", h)
+		default:
 			r.mux.Method(spec.Method, spec.Path, h)
 		}
 	}
@@ -244,9 +250,37 @@ func (r *Registry[M]) Handler() http.Handler {
 			mux.NotFound(reply)
 			mux.MethodNotAllowed(reply)
 		}
-		r.handler = wrap(r.mux, r.global)
+		h := wrap(r.mux, r.global)
+		r.handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			h.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), matchKey{}, new(string))))
+		})
 	}
 	return r.handler
+}
+
+type matchKey struct{}
+
+// MatchedPath returns the declared path of the endpoint or mount serving r,
+// such as "/items/{id}", to log requests by route instead of by URL. A
+// global stage reads it after the next handler returns; routing happens
+// inside the global stages. It is empty for unmatched requests and before
+// routing.
+func MatchedPath(r *http.Request) string {
+	if path, ok := r.Context().Value(matchKey{}).(*string); ok {
+		return *path
+	}
+	return ""
+}
+
+// recordMatch runs before the endpoint's stages, so a request they refuse
+// still names its route.
+func recordMatch(path string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if matched, ok := r.Context().Value(matchKey{}).(*string); ok {
+			*matched = path
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 var methods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE"}
