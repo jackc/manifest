@@ -2,6 +2,7 @@ package action_test
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"reflect"
 	"testing"
@@ -258,5 +259,36 @@ func TestCallRejectsInvalidMiddlewareResults(t *testing.T) {
 				t.Fatalf("Call() = %q, %v; want zero result and type error", got, err)
 			}
 		})
+	}
+}
+
+func TestInventoryDescribesCatalogWithoutInvoking(t *testing.T) {
+	var registry action.Registry[dependencies, metadata]
+	if got, _ := json.Marshal(registry.Inventory()); string(got) != `{"schema_version":1,"actions":[]}` {
+		t.Fatalf("empty inventory = %s", got)
+	}
+	for _, name := range []string{"zeta", "alpha"} {
+		registry.Define(action.Definition[dependencies, metadata, params, string]{
+			Name: name, Description: "Describe " + name + ".", Metadata: metadata{Category: name + "-category"},
+			Handler: func(context.Context, dependencies, params) (string, error) {
+				t.Fatal("inventory invoked an action")
+				return "", nil
+			},
+		})
+	}
+	inventory := registry.Inventory()
+	got, err := json.Marshal(inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"schema_version":1,"actions":[` +
+		`{"name":"alpha","description":"Describe alpha.","metadata":{"Category":"alpha-category"}},` +
+		`{"name":"zeta","description":"Describe zeta.","metadata":{"Category":"zeta-category"}}]}`
+	if string(got) != want {
+		t.Fatalf("inventory = %s\nwant        %s", got, want)
+	}
+	inventory.Actions[0].Metadata.Category = "changed"
+	if a, _ := registry.Lookup("alpha"); a.Metadata().Category != "alpha-category" || registry.Inventory().Actions[0].Metadata.Category != "alpha-category" {
+		t.Fatal("changing an inventory changed the registry")
 	}
 }

@@ -110,6 +110,32 @@ func (r *Registry[D, M]) Catalog() []AnyAction[D, M] {
 	slices.SortFunc(a, func(a, b AnyAction[D, M]) int { return strings.Compare(a.Name(), b.Name()) })
 	return a
 }
+
+// Entry describes one action in an Inventory.
+type Entry[M any] struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Metadata    M      `json:"metadata"`
+}
+
+// Inventory is a versioned description of a registry's catalog.
+type Inventory[M any] struct {
+	SchemaVersion int        `json:"schema_version"`
+	Actions       []Entry[M] `json:"actions"`
+}
+
+// Inventory returns a snapshot sorted by action name, without invoking
+// actions or requiring dependencies. Metadata is copied by value; callers
+// must treat any referenced application data as immutable.
+func (r *Registry[D, M]) Inventory() Inventory[M] {
+	catalog := r.Catalog()
+	actions := make([]Entry[M], len(catalog))
+	for i, a := range catalog {
+		actions[i] = Entry[M]{Name: a.Name(), Description: a.Description(), Metadata: a.Metadata()}
+	}
+	return Inventory[M]{SchemaVersion: 1, Actions: actions}
+}
+
 func (a *Action[D, M, P, R]) Name() string        { return a.def.Name }
 func (a *Action[D, M, P, R]) Description() string { return a.def.Description }
 func (a *Action[D, M, P, R]) Metadata() M         { return a.def.Metadata }

@@ -7,7 +7,8 @@ Applications own their dependencies, metadata, and policy semantics.
 ## Packages
 
 - `github.com/jackc/manifest/action`: typed action catalogs, middleware dispatch,
-  parameter validation, and dynamic JSON invocation. Registries and dispatchers
+  parameter validation, dynamic JSON invocation, and a versioned inventory of
+  each catalog's names, descriptions, and metadata. Registries and dispatchers
   are explicit instances; dependencies are supplied per invocation.
 - `github.com/jackc/manifest/httpregistry`: HTTP routing, metadata compilation,
   typed operation bindings, and inventories derived from the same declarations
