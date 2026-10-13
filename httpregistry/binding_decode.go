@@ -64,23 +64,59 @@ func (plan *bindingPlan) decodeURLParameters(r *http.Request, params reflect.Val
 
 func (plan *bindingPlan) decodeBody(w http.ResponseWriter, r *http.Request, params reflect.Value) error {
 	if plan.spec.JSON == NoJSON {
-		if plan.spec.RejectUnexpectedBody && r.Body != nil {
-			data, err := io.ReadAll(io.LimitReader(r.Body, 1))
-			if len(data) > 0 {
-				return fmt.Errorf("unexpected request body")
-			}
-			if err != nil && err != io.EOF {
-				return err
-			}
+		if plan.spec.RejectUnexpectedBody {
+			return rejectBody(r)
 		}
 		return nil
 	}
+	body := reflect.New(plan.bodyType)
+	if err := decodeJSONObject(w, r, body.Interface(), plan.spec.MaxBodyBytes); err != nil {
+		return err
+	}
+	for bodyField, parameterField := range plan.bodyDestinations {
+		params.FieldByIndex(parameterField).Set(body.Elem().Field(bodyField))
+	}
+	return nil
+}
+
+// DecodeJSONBody decodes a request body into dst by StrictJSON's rules, so
+// a custom handler accepts exactly what a binding would: one JSON object,
+// read in full, with no unknown members. A positive maxBytes bounds the
+// body as MaxBodyBytes does; zero means no limit, and a negative limit
+// panics. options follow the strict defaults and so can relax them, such
+// as json.RejectUnknownMembers(false) for a protocol whose documents may
+// carry extensions; the body must still be an object.
+//
+// Every failure is an *InputError, wrapping any *http.MaxBytesError.
+func DecodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64, options ...json.Options) error {
+	if maxBytes < 0 {
+		panic("httpregistry: negative body limit")
+	}
+	if err := decodeJSONObject(w, r, dst, maxBytes, options...); err != nil {
+		return &InputError{Err: err}
+	}
+	return nil
+}
+
+// RejectBody refuses a request body in a custom handler that takes none,
+// as RejectUnexpectedBody does for a binding. It reads at most one byte.
+// Every failure is an *InputError.
+func RejectBody(r *http.Request) error {
+	if err := rejectBody(r); err != nil {
+		return &InputError{Err: err}
+	}
+	return nil
+}
+
+// decodeJSONObject and rejectBody are the body rules shared by bindings and
+// custom handlers. Their errors are unwrapped; callers wrap them.
+func decodeJSONObject(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64, options ...json.Options) error {
 	reader := r.Body
 	if reader == nil {
 		return io.EOF
 	}
-	if plan.spec.MaxBodyBytes > 0 {
-		reader = http.MaxBytesReader(w, reader, plan.spec.MaxBodyBytes)
+	if maxBytes > 0 {
+		reader = http.MaxBytesReader(w, reader, maxBytes)
 	}
 	// Read the complete body so the byte limit also covers trailing whitespace.
 	data, err := io.ReadAll(reader)
@@ -91,12 +127,19 @@ func (plan *bindingPlan) decodeBody(w http.ResponseWriter, r *http.Request, para
 	if trimmed := bytes.TrimLeft(data, " \t\r\n"); len(trimmed) == 0 || trimmed[0] != '{' {
 		return fmt.Errorf("expected JSON object")
 	}
-	body := reflect.New(plan.bodyType)
-	if err := json.Unmarshal(data, body.Interface(), json.RejectUnknownMembers(true)); err != nil {
-		return err
+	return json.Unmarshal(data, dst, append([]json.Options{json.RejectUnknownMembers(true)}, options...)...)
+}
+
+func rejectBody(r *http.Request) error {
+	if r.Body == nil {
+		return nil
 	}
-	for bodyField, parameterField := range plan.bodyDestinations {
-		params.FieldByIndex(parameterField).Set(body.Elem().Field(bodyField))
+	data, err := io.ReadAll(io.LimitReader(r.Body, 1))
+	if len(data) > 0 {
+		return fmt.Errorf("unexpected request body")
+	}
+	if err != nil && err != io.EOF {
+		return err
 	}
 	return nil
 }

@@ -252,7 +252,9 @@ func TestUnmatchedRequests(t *testing.T) {
 	require.Equal(t, &httpregistry.UnmatchedEntry{Name: "test-unmatched", Stages: []string{"global-header"}}, inv.Unmatched)
 	inv.Unmatched.Stages[0] = "changed"
 	require.Equal(t, "global-header", r.Inventory().Unmatched.Stages[0])
-	require.Panics(t, func() { r.SetUnmatched(httpregistry.Unmatched{Name: "late", Handle: func(http.ResponseWriter, *http.Request, []string) {}}) })
+	require.Panics(t, func() {
+		r.SetUnmatched(httpregistry.Unmatched{Name: "late", Handle: func(http.ResponseWriter, *http.Request, []string) {}})
+	})
 }
 
 func TestUnmatchedDeclarations(t *testing.T) {

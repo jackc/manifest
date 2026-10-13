@@ -16,7 +16,8 @@ of Manifest and imports neither application code nor the `action` package. It ca
   temporary JSON body struct and how to copy its fields into action parameters.
 - `binding_decode.go` uses that plan for each request: decode path/query values,
   decode the body, and fill a fresh parameter struct. It neither invokes actions
-  nor chooses error responses.
+  nor chooses error responses. Its body rules are shared with `DecodeJSONBody`
+  and `RejectBody`, which apply them in custom handlers.
 
 ## Registration and metadata
 
@@ -96,6 +97,17 @@ that take one flat parameter document, such as an action catalog served one
 route per action. The derived inputs are ordinary declarations: `Bind`
 validates them and the inventory lists them.
 
+Options adjust the derived declarations, in a fixed order whatever order they
+are given in. `ZeroFields(fields...)` moves the named Go fields from the inputs
+to `Zero`, after the `-`-tagged fields and in the order named, so the route
+refuses them as unknown although its operation accepts them from other callers.
+`FieldsFromPath(path)` then takes the fields named by the route's placeholders,
+`{name}` or a final `{name...}`, from the path; a placeholder matches an input
+name, not a Go field name. Pass the same path to `Spec`. Invalid options panic
+at construction: a zero field that is not a derived input (including a
+`-`-tagged one), an invalid path, a placeholder that names no remaining input,
+or more than one path.
+
 Path/query mappings support strings, booleans, integers, and floats, types
 implementing `encoding.TextUnmarshaler` (such as `uuid.UUID` and `time.Time`),
 optional pointers, and query lists. A type's own `UnmarshalText` takes
@@ -139,6 +151,22 @@ API's `encoding/json` response shapes), and the configured 2xx status;
 headers. Login cookies, response filtering, OAuth forms, streams, and protocol
 errors belong in custom handlers.
 
+## Custom handler bodies
+
+A custom handler that decodes its own parameters can accept exactly what a
+binding would. `DecodeJSONBody(w, r, dst, maxBytes, options...)` applies
+`StrictJSON`'s rules with the same code a binding uses: it reads the complete
+body under a positive `maxBytes` (zero means no limit; a negative limit
+panics), requires one JSON object, and decodes with `encoding/json/v2` and
+`RejectUnknownMembers`. Extra `json.Options` follow the strict defaults and so
+can relax them, as a protocol whose documents may carry extension members
+needs with `json.RejectUnknownMembers(false)`; the body must still be an
+object. `RejectBody(r)` refuses any request body, as `RejectUnexpectedBody`
+does for a binding, for a handler that takes none. Both return `nil` or an
+`*InputError`, which wraps `http.MaxBytesError` past the limit, so one error
+writer can serve bindings and custom handlers alike. A custom handler is still
+described only as custom: the inventory does not see which rules it applies.
+
 ## Evidence and boundaries
 
 `Inventory()` returns a versioned snapshot sorted by path and method. Each entry
@@ -161,7 +189,8 @@ namespace/action pair can be joined to them by tooling. No runtime action
 function inspection is needed.
 
 The tests cover metadata enforcement before decoding, text-decoded values,
-embedded fields, derived inputs, custom encoders, ordering, routing and
+embedded fields, derived inputs and their zero and path options, custom
+handler body decoding against a binding's, custom encoders, ordering, routing and
 mount boundaries, trailing placeholders, matched paths, unmatched requests,
 independent instances, frozen registration, strict versus legacy decoding, conflicting mappings, size
 limits, typed invocation, and snapshot isolation. An architecture check rejects dependencies on application
