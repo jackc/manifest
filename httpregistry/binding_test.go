@@ -360,3 +360,16 @@ func TestBindingEncoder(t *testing.T) {
 		})
 	}
 }
+
+func TestBindingTrailingPlaceholder(t *testing.T) {
+	type params struct{ ID, Name string }
+	var got params
+	op := operation[params, params]{call: func(_ context.Context, _ string, p params) (params, error) { got = p; return p, nil }}
+	ep := httpregistry.Bind(op, "dependencies", httpregistry.Binding{JSON: httpregistry.NoJSON, Status: 200, Errors: errorWriter(), Inputs: []httpregistry.Input{
+		{Source: "path", Name: "id", Field: "ID"}, {Source: "path", Name: "name", Field: "Name"},
+	}})
+	r := registryFor(ep, "/items/{id}/{name...}")
+	require.Equal(t, 200, request(r.Handler(), "POST", "/items/abc/x/y", "").Code)
+	require.Equal(t, params{ID: "abc", Name: "x/y"}, got)
+	require.Panics(t, func() { registryFor(ep, "/items/{id}/{other...}") })
+}

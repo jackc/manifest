@@ -106,6 +106,24 @@ func TestInvalidRegistrations(t *testing.T) {
 		{"unsupported-pattern", func(r *httpregistry.Registry[metadata]) {
 			r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/{id:[0-9]+}"}, ep)
 		}},
+		{"rest-not-final", func(r *httpregistry.Registry[metadata]) {
+			r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/{a...}/b"}, ep)
+		}},
+		{"rest-without-name", func(r *httpregistry.Registry[metadata]) {
+			r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/a/{...}"}, ep)
+		}},
+		{"equivalent-rest", func(r *httpregistry.Registry[metadata]) {
+			r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/a/{x...}"}, ep)
+			r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/a/{y...}"}, ep)
+		}},
+		{"rest-overlaps-mount", func(r *httpregistry.Registry[metadata]) {
+			r.Mount(httpregistry.Spec[metadata]{Path: "/m/a/b"}, ep)
+			r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/m/{rest...}"}, ep)
+		}},
+		{"mount-below-rest", func(r *httpregistry.Registry[metadata]) {
+			r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/{rest...}"}, ep)
+			r.Mount(httpregistry.Spec[metadata]{Path: "/m/a"}, ep)
+		}},
 		{"missing-target", func(r *httpregistry.Registry[metadata]) {
 			r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/a"}, httpregistry.Endpoint{})
 		}},
@@ -257,4 +275,40 @@ func TestUnmatchedDeclarations(t *testing.T) {
 	data, err := json.Marshal(r.Inventory())
 	require.NoError(t, err)
 	require.NotContains(t, string(data), "unmatched")
+}
+
+func TestTrailingPlaceholder(t *testing.T) {
+	r := httpregistry.New(func(httpregistry.Spec[metadata]) ([]httpregistry.Stage, error) {
+		// Stages read placeholders by name, as handlers do.
+		return []httpregistry.Stage{{Name: "header", Wrap: func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("X-Name", httpregistry.PathParam(req, "name"))
+				next.ServeHTTP(w, req)
+			})
+		}}}, nil
+	})
+	echo := httpregistry.Custom(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		fmt.Fprintf(w, "%s|%s", httpregistry.PathParam(req, "id"), httpregistry.PathParam(req, "name"))
+	}))
+	r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/files/{id}/{name...}"}, echo)
+	r.Handle(httpregistry.Spec[metadata]{Method: "GET", Path: "/files/{id}/index"}, httpregistry.Custom(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "literal")
+	})))
+	h := r.Handler()
+	for path, want := range map[string]string{
+		"/files/7/a/b.txt": "7|a/b.txt",
+		"/files/7/":        "7|",
+		"/files/7/a/":      "7|a/",
+		"/files/7/index":   "literal", // A literal route takes precedence.
+	} {
+		w := request(h, "GET", path, "")
+		require.Equal(t, 200, w.Code, path)
+		require.Equal(t, want, w.Body.String(), path)
+	}
+	w := request(h, "GET", "/files/7/a/b.txt", "")
+	require.Equal(t, "a/b.txt", w.Header().Get("X-Name"))
+	require.Equal(t, 404, request(h, "GET", "/files/7", "").Code)
+	require.Equal(t, 405, request(h, "POST", "/files/7/a", "").Code)
+	inv := r.Inventory()
+	require.Equal(t, "/files/{id}/{name...}", inv.Endpoints[1].Path)
 }

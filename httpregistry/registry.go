@@ -150,7 +150,7 @@ func (r *Registry[M]) register(spec Spec[M], ep Endpoint, mount bool) {
 	if ep.handler == nil && ep.factory == nil {
 		panic("httpregistry: missing endpoint")
 	}
-	params, shape := pathShape(spec.Path)
+	params, shape, rest := pathShape(spec.Path)
 	if mount {
 		if spec.Method != "" || len(params) != 0 || strings.HasSuffix(spec.Path, "/") {
 			panic("httpregistry: mounts require a literal path, no method or trailing slash")
@@ -200,6 +200,10 @@ func (r *Registry[M]) register(spec Spec[M], ep Endpoint, mount bool) {
 		h := wrap(ep.handler, stages)
 		if mount {
 			r.mux.Mount(spec.Path, h)
+		} else if rest != "" {
+			// The router names a trailing wildcard "*". Alias it before any
+			// stage runs, so PathParam reads every placeholder by its name.
+			r.mux.Method(spec.Method, strings.TrimSuffix(spec.Path, "{"+rest+"...}")+"*", restAlias(rest, h))
 		} else {
 			r.mux.Method(spec.Method, spec.Path, h)
 		}
@@ -302,6 +306,15 @@ func (r *Registry[M]) Inventory() Inventory[M] {
 // PathParam reads an endpoint's matched path parameter without exposing the router.
 func PathParam(r *http.Request, name string) string { return chi.URLParam(r, name) }
 
+func restAlias(name string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rctx := chi.RouteContext(r.Context()); rctx != nil {
+			rctx.URLParams.Add(name, rctx.URLParam("*"))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func wrap(h http.Handler, stages []Stage) http.Handler {
 	for i := len(stages) - 1; i >= 0; i-- {
 		h = stages[i].Wrap(h)
@@ -326,12 +339,16 @@ func validateStages(stages []Stage) {
 	}
 }
 func within(path, prefix string) bool {
-	// A placeholder can intersect a literal mount prefix too.
+	// A placeholder can intersect a literal mount prefix too, and a trailing
+	// placeholder intersects every prefix below its parent.
 	parts, base := strings.Split(path, "/"), strings.Split(prefix, "/")
-	if len(parts) < len(base) {
-		return false
-	}
 	for i, p := range base {
+		if i >= len(parts) {
+			return false
+		}
+		if strings.HasSuffix(parts[i], "...}") {
+			return true
+		}
 		if parts[i] != p && !strings.HasPrefix(parts[i], "{") {
 			return false
 		}
@@ -347,20 +364,26 @@ func sameStrings(a, b []string) bool {
 	return slices.Equal(a, b)
 }
 
-// Initially only literal segments and whole-segment {name} placeholders are
-// supported. This keeps binding coverage and duplicate detection unambiguous.
-func pathShape(path string) ([]string, string) {
+// Only literal segments, whole-segment {name} placeholders, and a final
+// {name...} placeholder are supported. This keeps binding coverage and
+// duplicate detection unambiguous. rest names the final placeholder, if any.
+func pathShape(path string) (names []string, shape, rest string) {
 	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#*") || strings.Contains(path, "//") {
 		panic("httpregistry: invalid path " + path)
 	}
 	parts := strings.Split(path, "/")
-	var names []string
 	for i, p := range parts {
 		if strings.ContainsAny(p, "{}") {
 			if len(p) < 3 || p[0] != '{' || p[len(p)-1] != '}' {
 				panic("httpregistry: invalid placeholder")
 			}
-			name := p[1 : len(p)-1]
+			name, isRest := strings.CutSuffix(p[1:len(p)-1], "...")
+			if isRest && i != len(parts)-1 {
+				panic("httpregistry: {name...} must be the final segment")
+			}
+			if name == "" {
+				panic("httpregistry: invalid placeholder")
+			}
 			for _, c := range name {
 				if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
 					panic("httpregistry: invalid placeholder")
@@ -371,7 +394,10 @@ func pathShape(path string) ([]string, string) {
 			}
 			names = append(names, name)
 			parts[i] = "{}"
+			if isRest {
+				parts[i], rest = "{...}", name
+			}
 		}
 	}
-	return names, strings.Join(parts, "/")
+	return names, strings.Join(parts, "/"), rest
 }
